@@ -1,0 +1,43 @@
+
+apiVersion: v1
+
+kind: ConfigMap
+
+metadata:
+
+  name: grafana-smtp-config
+
+  namespace: monitoring
+
+data:
+
+  grafana.ini: |
+
+    [smtp]
+
+    enabled = true
+
+    host = smtp.gmail.com:587
+
+    user = nehawakhare91@gmail.com
+
+    password = mojf vkqq qfis zbxo
+
+    skip_verify = true
+
+    from_address = nehawakhare91@gmail.com
+
+    from_name = EasyShop Monitoring
+
+    
+
+    [server]
+
+    root_url = http://grafana.3.14.249.19.nip.io
+
+    
+
+    [alerting]
+
+    enabled = true
+

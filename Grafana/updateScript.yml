@@ -1,0 +1,175 @@
+cd /home/ubuntu/EasyShop/kubernetes
+
+cat > update-all-ips.sh <<'SCRIPT'
+#!/bin/bash
+
+# Colors for output
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+echo -e "${YELLOW}================================${NC}"
+echo -e "${YELLOW}EasyShop & Grafana IP Update${NC}"
+echo -e "${YELLOW}================================${NC}"
+
+# Step 1: Get current IP
+echo -e "\n${GREEN}Step 1: Getting current EC2 IP...${NC}"
+CURRENT_IP=$(curl -s ifconfig.me)
+echo "Current IP: $CURRENT_IP"
+
+if [ -z "$CURRENT_IP" ]; then
+    echo "Error: Could not fetch IP address!"
+    exit 1
+fi
+
+# Step 2: Update EasyShop Ingress
+echo -e "\n${GREEN}Step 2: Updating EasyShop Ingress...${NC}"
+cat > 10-ingress.yaml <<EOF
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: easyshop-ingress
+  namespace: easyshop
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: easyshop.${CURRENT_IP}.nip.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: easyshop-service
+            port:
+              number: 80
+EOF
+
+kubectl apply -f 10-ingress.yaml
+
+# Step 3: Update EasyShop ConfigMap
+echo -e "\n${GREEN}Step 3: Updating EasyShop ConfigMap...${NC}"
+cat > 04-configmap.yaml <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: easyshop-config
+  namespace: easyshop
+data:
+  MONGODB_URI: "mongodb://mongodb-0.mongodb-service.easyshop.svc.cluster.local:27017/easyshop"
+  REDIS_URI: "redis://easyshop-redis.easyshop.svc.cluster.local:6379"
+  NODE_ENV: "production"
+  NEXT_PUBLIC_API_URL: "http://easyshop.${CURRENT_IP}.nip.io/api"
+  NEXTAUTH_URL: "http://easyshop.${CURRENT_IP}.nip.io"
+  NEXTAUTH_SECRET: "d+TeXQKeHVaT765J79c93a+RoOu1hRn/IVzUKXvrHHk="
+  JWT_SECRET: "49d07d71fdd2f07ea90a6c6d67b054ee17895088441f9eed31b87e8e7fa7c0f6"
+EOF
+
+kubectl apply -f 04-configmap.yaml
+
+echo -e "\n${GREEN}Restarting EasyShop deployment...${NC}"
+kubectl rollout restart deployment easyshop -n easyshop
+
+# Step 4: Update Grafana Ingress
+echo -e "\n${GREEN}Step 4: Creating/Updating Grafana Ingress...${NC}"
+cat > grafana-ingress.yaml <<EOF
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana-ingress
+  namespace: monitoring
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: grafana.${CURRENT_IP}.nip.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: prometheus-grafana
+            port:
+              number: 80
+EOF
+
+kubectl apply -f grafana-ingress.yaml
+
+# Step 5: Update Prometheus Ingress (Optional)
+echo -e "\n${GREEN}Step 5: Creating/Updating Prometheus Ingress...${NC}"
+cat > prometheus-ingress.yaml <<EOF
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: prometheus-ingress
+  namespace: monitoring
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: prometheus.${CURRENT_IP}.nip.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: prometheus-kube-prometheus-prometheus
+            port:
+              number: 9090
+EOF
+
+kubectl apply -f prometheus-ingress.yaml
+
+# Step 6: Update Grafana Server URL
+echo -e "\n${GREEN}Step 6: Updating Grafana Server URL...${NC}"
+kubectl set env deployment/prometheus-grafana -n monitoring \
+  GF_SERVER_ROOT_URL=http://grafana.${CURRENT_IP}.nip.io
+
+# Step 7: Wait for deployments
+echo -e "\n${GREEN}Step 7: Waiting for deployments to be ready...${NC}"
+kubectl rollout status deployment/easyshop -n easyshop --timeout=120s
+kubectl rollout status deployment/prometheus-grafana -n monitoring --timeout=120s
+
+# Step 8: Verify Everything
+echo -e "\n${GREEN}Step 8: Verifying deployments...${NC}"
+echo -e "\n${YELLOW}All Ingresses:${NC}"
+kubectl get ing -A
+
+echo -e "\n${YELLOW}Testing EasyShop...${NC}"
+curl -I http://easyshop.${CURRENT_IP}.nip.io 2>&1 | head -5
+
+echo -e "\n${YELLOW}Testing Grafana...${NC}"
+curl -I http://grafana.${CURRENT_IP}.nip.io 2>&1 | head -5
+
+# Step 9: Display URLs
+echo -e "\n${GREEN}================================${NC}"
+echo -e "${GREEN}✅ Update Complete!${NC}"
+echo -e "${GREEN}================================${NC}"
+echo -e "\n${YELLOW}Your Updated URLs:${NC}"
+echo -e "EasyShop:    ${GREEN}http://easyshop.${CURRENT_IP}.nip.io${NC}"
+echo -e "Grafana:     ${GREEN}http://grafana.${CURRENT_IP}.nip.io${NC}"
+echo -e "Prometheus:  ${GREEN}http://prometheus.${CURRENT_IP}.nip.io${NC}"
+echo ""
+echo -e "${YELLOW}Grafana Login:${NC}"
+echo "Username: admin"
+echo -n "Password: "
+kubectl get secret -n monitoring prometheus-grafana -o jsonpath="{.data.admin-password}" 2>/dev/null | base64 --decode
+echo ""
+echo -e "\n${GREEN}================================${NC}"
+SCRIPT
+
+# Make script executable
+chmod +x update-all-ips.sh
+
+echo "Script created! Run with:"
+echo "./update-all-ips.sh"
+
+cd /home/ubuntu/EasyShop/Grafana
+./update-all-ips.sh
